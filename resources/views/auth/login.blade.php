@@ -4,7 +4,7 @@
 
 @section('content')
     <div class="auth-card">
-        {{-- Logo/Ikon (Ditambahkan agar sesuai dengan master layout) --}}
+        {{-- Logo/Ikon --}}
         <div class="header-logo text-center mb-4">
             <i class="fas fa-lock fa-3x" style="color: #2563eb;"></i>
         </div>
@@ -23,13 +23,10 @@
             </div>
 
             <div class="form-group">
-                {{-- Menggunakan password-header untuk menyejajarkan Label dan Link ke kanan --}}
-                
                 <input type="password" id="password" name="password" required placeholder="Masukkan password">
                 <div class="password-header">
-
-                    {{-- Menggunakan forgot-link dan tujuan yang benar --}}
-                    <a href="/profil/index" class="forgot-link">Lupa password?</a>
+                    {{-- LINK YANG DIPERBAIKI --}}
+                    <a href="{{ route('password.request') }}" class="forgot-link">Lupa password?</a>
                 </div>
             </div>
 

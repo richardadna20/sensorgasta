@@ -4,9 +4,9 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Carbon\Carbon;
+use Carbon\Carbon; // Digunakan untuk manipulasi tanggal dan bulan
 use Barryvdh\DomPDF\Facade\Pdf;
-use App\Models\SensorData;
+use App\Models\SensorData; // Pastikan Model ini sudah ada dan benar
 
 class DashboardController extends Controller
 {
@@ -63,7 +63,8 @@ class DashboardController extends Controller
             'suhuLabels' => $labels,
             'suhuData'   => $suhuData->toArray(),
 
-            // KELEMBABAN
+           // KELEMBABAN
+
             'jumlahKelembaban' => $jumlahKelembaban,
             'rataKelembaban'   => round($rataKelembaban, 2),
             'maxKelembaban'    => $maxKelembaban,
@@ -92,58 +93,107 @@ class DashboardController extends Controller
         if ($kelembaban > 80 || $kelembaban < 30) return 'Bahaya';
         return 'Normal';
     }
-public function dataSensor(Request $request)
-{
-    $query = SensorData::query();
+    
+    public function dataSensor(Request $request)
+    {
+        $query = SensorData::query();
 
-    // Filter tanggal
-    if ($request->filled('tanggal')) {
-        $query->whereDate('created_at', $request->tanggal);
+        // Filter tanggal
+        if ($request->filled('tanggal')) {
+            $query->whereDate('created_at', $request->tanggal);
+        }
+
+        $allData = $query->orderBy('created_at', 'desc')->paginate(20);
+
+        return view('datasensor', compact('allData'));
     }
 
-    $allData = $query->orderBy('created_at', 'desc')->paginate(20);
+    public function downloadPDF(Request $request)
+    {
+        $query = SensorData::query();
 
-    return view('datasensor', compact('allData'));
-}
+        if ($request->filled('tanggal')) {
+            $query->whereDate('created_at', $request->tanggal);
+        }
 
-public function downloadPDF(Request $request)
-{
-    $query = SensorData::query();
+        $allData = $query->orderBy('created_at', 'desc')->get();
 
-    if ($request->filled('tanggal')) {
-        $query->whereDate('created_at', $request->tanggal);
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('datasensorpdf', compact('allData'));
+
+        return $pdf->download('laporandatasensor.pdf');
     }
+    
+    public function grafik(Request $request)
+    {
+        $query = SensorData::query();
 
-    $allData = $query->orderBy('created_at', 'desc')->get();
+        // Filter tanggal (opsional)
+        if ($request->filled('start_date') && $request->filled('end_date')) {
+            $query->whereBetween('created_at', [
+                $request->start_date . " 00:00:00",
+                $request->end_date . " 23:59:59"
+            ]);
+        }
 
-    $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('datasensorpdf', compact('allData'));
+        $data = $query->orderBy('created_at')->get();
 
-    return $pdf->download('laporandatasensor.pdf');
-}
-public function grafik(Request $request)
-{
-    $query = SensorData::query();
-
-    // Filter tanggal (opsional)
-    if ($request->filled('start_date') && $request->filled('end_date')) {
-        $query->whereBetween('created_at', [
-            $request->start_date . " 00:00:00",
-            $request->end_date . " 23:59:59"
+        return view('grafik', [
+            'labels' => $data->pluck('created_at')->map(fn($d) => $d->format('Y-m-d H:i'))->toArray(),
+            'gasData' => $data->pluck('gas')->toArray(),
+            'suhuData' => $data->pluck('suhu')->toArray(),
+            'kelembabanData' => $data->pluck('kelembaban')->toArray(),
+            'start_date' => $request->start_date,
+            'end_date' => $request->end_date,
         ]);
     }
 
-    $data = $query->orderBy('created_at')->get();
+    // --- METHOD BARU: HAPUS DATA PER BULAN (FIXED TIMEZONE) ---
+    /**
+     * Menghapus semua data sensor berdasarkan bulan dan tahun yang dipilih.
+     */
+    public function deleteByMonth(Request $request)
+    {
+        $request->validate([
+            'month' => 'required|integer|min:1|max:12',
+            // Dipermudah: hanya min 2020.
+            'year' => 'required|integer|min:2020', 
+        ]);
 
-    return view('grafik', [
-        'labels' => $data->pluck('created_at')->map(fn($d) => $d->format('Y-m-d H:i'))->toArray(),
-        'gasData' => $data->pluck('gas')->toArray(),
-        'suhuData' => $data->pluck('suhu')->toArray(),
-        'kelembabanData' => $data->pluck('kelembaban')->toArray(),
-        'start_date' => $request->start_date,
-        'end_date' => $request->end_date,
-    ]);
+        // Lakukan konversi eksplisit ke integer (int)
+        $month = (int) $request->month;
+        $year = (int) $request->year;
+
+        try {
+            
+            // 1. Buat tanggal 1 bulan terpilih
+            $date = Carbon::createSafe($year, $month, 1);
+            
+            if (!$date) {
+                return redirect()->route('data.sensor')->with('delete_error', "Kombinasi bulan dan tahun tidak valid.");
+            }
+
+            // 2. Tentukan rentang waktu awal dan akhir bulan.
+            // PENTING: Set timezone ke 'UTC' agar cocok dengan penyimpanan created_at di database.
+            $startDate = $date->copy()->startOfMonth()->setTimezone('UTC'); // <-- FIX TIMEZONE
+            $endDate = $date->copy()->endOfMonth()->setTimezone('UTC');     // <-- FIX TIMEZONE
+
+            // Query untuk menghapus data menggunakan Model SensorData
+            $deletedCount = SensorData::whereBetween('created_at', [$startDate, $endDate])
+                                        ->delete();
+
+            if ($deletedCount > 0) {
+                // Untuk pesan success/error, kita kembalikan lagi ke Timezone lokal 
+                // agar nama bulan yang ditampilkan benar bagi user (misal: "Oktober 2024")
+                $monthName = $date->translatedFormat('F Y'); 
+                return redirect()->route('data.sensor')->with('delete_success', "Berhasil menghapus **{$deletedCount}** data sensor untuk bulan **{$monthName}**.");
+            } else {
+                $monthName = $date->translatedFormat('F Y'); 
+                return redirect()->route('data.sensor')->with('delete_error', "Tidak ditemukan data sensor untuk bulan **{$monthName}**.");
+            }
+        } catch (\Exception $e) {
+            // Tangkap exception jika ada kegagalan tak terduga (misalnya error database)
+            // Anda bisa log $e->getMessage() untuk debugging lebih lanjut
+            return redirect()->route('data.sensor')->with('delete_error', "Terjadi kesalahan sistem saat menghapus data.");
+        }
+    }
 }
-
-}
-
-
